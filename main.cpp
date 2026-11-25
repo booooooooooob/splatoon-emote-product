@@ -190,9 +190,7 @@ void handleMenuInput(uint32_t trigger) {
 
 void buildText(char *text, size_t size) {
     const Preset &cur = kPresets[gSelected];
-    if (!gMenuOpen) {
-        snprintf(text, size, "Motion: %s (ID %d)   [- : menu]", presetName(gSelected), cur.id);
-    } else if (!kListView) {
+    if (!kListView) {
         snprintf(text, size, "[MENU %d/%d] %s (ID %d)", gSelected + 1, kPresetCount, presetName(gSelected), cur.id);
     } else {
         int len = snprintf(text, size, "[MENU] UP/DOWN: select  L: play  -: close");
@@ -203,8 +201,17 @@ void buildText(char *text, size_t size) {
     }
 }
 
+// The overlay only exists while the menu is open.
 void updateOverlay() {
     if (!gNotifyOk) {
+        return;
+    }
+    if (!gMenuOpen) {
+        if (gOverlayExists) {
+            NotificationModule_FinishDynamicNotification(gOverlay, 0.0f);
+            gOverlayExists = false;
+            gLastText[0]   = '\0';
+        }
         return;
     }
     char text[640];
