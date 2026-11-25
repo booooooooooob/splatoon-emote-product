@@ -10,8 +10,8 @@ WUMS_ROOT := $(DEVKITPRO)/wums
 
 TARGET   := emote_only
 BUILD    := build
-SOURCES  := src
-INCLUDES := src
+SOURCES  := .
+INCLUDES := .
 
 ARCH    ?= -mcpu=750 -meabi -mhard-float
 MACHDEP ?= -DESPRESSO $(ARCH)
