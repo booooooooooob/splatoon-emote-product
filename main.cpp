@@ -8,9 +8,9 @@
 #include <cstdio>
 #include <cstring>
 
-WUPS_PLUGIN_NAME("Splatoon L Emote (debug)");
-WUPS_PLUGIN_DESCRIPTION("Hold L to play the selected motion ID. D-pad up/down changes the ID.");
-WUPS_PLUGIN_VERSION("v0.2");
+WUPS_PLUGIN_NAME("Splatoon L Emote");
+WUPS_PLUGIN_DESCRIPTION("Minus opens a motion list. Hold L to play the selected motion.");
+WUPS_PLUGIN_VERSION("v0.3");
 WUPS_PLUGIN_AUTHOR("-");
 WUPS_PLUGIN_LICENSE("MIT");
 
@@ -53,13 +53,30 @@ constexpr uint32_t kSingleton        = 0x106E46E8;
 constexpr uint32_t kObjectOffset     = 0x76C;
 constexpr uint32_t kStateOffset      = 0x24; // current state / motion id of the player object
 
-// Debug selection range. The upper limit is a guess: ids above the real
-// number of states may crash the game. Lower it if the game freezes.
-constexpr int  kMinId      = 0;
-constexpr int  kMaxId      = 320;
-constexpr int  kDefaultId  = 262;
-// Hide D-pad up/down from the game so its own actions are not triggered.
-constexpr bool kBlockDpad  = true;
+// Motions that can be chosen from the menu.  id = motion id, ja = Japanese name, en = fallback name.
+struct Preset {
+    int         id;
+    const char *ja;
+    const char *en;
+};
+
+constexpr Preset kPresets[] = {
+        {28,  "カモン_バケツ",             "ComeOn_Bucket"},
+        {104, "なんかを構える",             "HoldSomething"},
+        {123, "なんかを構えながら歩く",     "HoldSomething_Walk"},
+        {243, "スーパージャンプ_ボイスあり", "SuperJump_Voice"},
+        {247, "死亡",                       "Death"},
+        {258, "クルン",                     "Kurun"},
+        {256, "ガチホコゴール_ボイスあり",   "RainmakerGoal_Voice"},
+        {266, "スピナー勝利",               "Spinner_Win"},
+        {268, "崩れ落ちて泣く",             "Collapse_Cry"},
+};
+constexpr int kPresetCount = static_cast<int>(sizeof(kPresets) / sizeof(kPresets[0]));
+
+// true : show the Japanese names.  false : show the plain ASCII names (use this if Japanese is garbled).
+constexpr bool kUseJapanese = true;
+// false : show only the selected entry on one line.  true : show the whole list (needs multi-line text support).
+constexpr bool kListView    = false;
 
 alignas(32) uint32_t gScratch = 0;
 alignas(32) int gStartId      = 262;
@@ -69,14 +86,13 @@ bool gChecked  = false;
 bool gValid    = false;
 bool gEmoting  = false;
 
-int  gDebugId  = kDefaultId;
-int  gHeldDir  = 0;
-int  gHeldTime = 0;
+int  gSelected = 0;     // index into kPresets
+bool gMenuOpen = false;
 
 bool gNotifyOk      = false;
 bool gOverlayExists = false;
 NotificationModuleHandle gOverlay{};
-char gLastText[64]  = "";
+char gLastText[640] = "";
 
 uint32_t readWord(uint32_t addr) {
     return *reinterpret_cast<volatile uint32_t *>(static_cast<uintptr_t>(addr));
@@ -124,15 +140,6 @@ void *getPlayerObject() {
     return reinterpret_cast<void *>(object);
 }
 
-int readCurrentState() {
-    void *object = getPlayerObject();
-    if (!object) {
-        return -1;
-    }
-    const uint32_t base = static_cast<uint32_t>(reinterpret_cast<uintptr_t>(object));
-    return static_cast<int>(readWord(base + kStateOffset));
-}
-
 using StartFn = int (*)(void *object, int *id, int r5, int r6, int r7, float f1, float f2);
 using EndFn   = int (*)(void *object, int *id, int r5, int r6);
 
@@ -145,7 +152,7 @@ void beginEmote() {
         writeInstruction(p.addr, p.patched);
     }
     gEmoting = true;
-    gStartId = gDebugId; // the game may write back into this value, so set it every time
+    gStartId = kPresets[gSelected].id; // the game may write back into this value, so set it every time
     reinterpret_cast<StartFn>(static_cast<uintptr_t>(kFnStart))(object, &gStartId, 0, 0, 0, 0.0f, 1.0f);
 }
 
@@ -161,32 +168,38 @@ void endEmote() {
     gEmoting = false;
 }
 
-// D-pad up = +1, down = -1. Holding repeats after a short delay.
-void handleIdInput(uint32_t hold) {
-    int dir = 0;
-    if ((hold & VPAD_BUTTON_UP) && !(hold & VPAD_BUTTON_DOWN)) {
-        dir = 1;
-    } else if ((hold & VPAD_BUTTON_DOWN) && !(hold & VPAD_BUTTON_UP)) {
-        dir = -1;
+const char *presetName(int index) {
+    return kUseJapanese ? kPresets[index].ja : kPresets[index].en;
+}
+
+// Minus opens/closes the menu. While it is open, D-pad up/down moves the cursor.
+void handleMenuInput(uint32_t trigger) {
+    if (trigger & VPAD_BUTTON_MINUS) {
+        gMenuOpen = !gMenuOpen;
     }
-    if (dir == 0 || dir != gHeldDir) {
-        gHeldTime = 0;
-    }
-    gHeldDir = dir;
-    if (dir == 0) {
+    if (!gMenuOpen) {
         return;
     }
-    ++gHeldTime;
-    const bool step = (gHeldTime == 1) || (gHeldTime > 20 && ((gHeldTime - 20) % 4) == 0);
-    if (step) {
-        int next = gDebugId + dir;
-        if (next < kMinId) {
-            next = kMinId;
+    if (trigger & VPAD_BUTTON_UP) {
+        gSelected = (gSelected + kPresetCount - 1) % kPresetCount;
+    }
+    if (trigger & VPAD_BUTTON_DOWN) {
+        gSelected = (gSelected + 1) % kPresetCount;
+    }
+}
+
+void buildText(char *text, size_t size) {
+    const Preset &cur = kPresets[gSelected];
+    if (!gMenuOpen) {
+        snprintf(text, size, "Motion: %s (ID %d)   [- : menu]", presetName(gSelected), cur.id);
+    } else if (!kListView) {
+        snprintf(text, size, "[MENU %d/%d] %s (ID %d)", gSelected + 1, kPresetCount, presetName(gSelected), cur.id);
+    } else {
+        int len = snprintf(text, size, "[MENU] UP/DOWN: select  L: play  -: close");
+        for (int i = 0; i < kPresetCount && len > 0 && static_cast<size_t>(len) < size; ++i) {
+            len += snprintf(text + len, size - static_cast<size_t>(len), "\n%s %s (ID %d)",
+                            i == gSelected ? ">" : " ", presetName(i), kPresets[i].id);
         }
-        if (next > kMaxId) {
-            next = kMaxId;
-        }
-        gDebugId = next;
     }
 }
 
@@ -194,8 +207,8 @@ void updateOverlay() {
     if (!gNotifyOk) {
         return;
     }
-    char text[64];
-    snprintf(text, sizeof(text), "Motion ID: %d  (state: %d)", gDebugId, readCurrentState());
+    char text[640];
+    buildText(text, sizeof(text));
     if (strcmp(text, gLastText) == 0) {
         return;
     }
@@ -212,7 +225,7 @@ void updateOverlay() {
     gLastText[sizeof(gLastText) - 1] = '\0';
 }
 
-void update(uint32_t hold) {
+void update(uint32_t hold, uint32_t trigger) {
     if (!gChecked) {
         gChecked = true;
         gValid   = isSplatoon() && codeMatches();
@@ -220,7 +233,7 @@ void update(uint32_t hold) {
     if (!gValid) {
         return;
     }
-    handleIdInput(hold);
+    handleMenuInput(trigger);
     updateOverlay();
     const bool held = (hold & VPAD_BUTTON_L) != 0;
     if (held && !gEmoting) {
@@ -236,8 +249,7 @@ ON_APPLICATION_START() {
     gChecked       = false;
     gValid         = false;
     gEmoting       = false;
-    gHeldDir       = 0;
-    gHeldTime      = 0;
+    gMenuOpen      = false;
     gOverlayExists = false;
     gLastText[0]   = '\0';
     gNotifyOk      = static_cast<int>(NotificationModule_InitLibrary()) == 0;
@@ -261,9 +273,13 @@ DECL_FUNCTION(int32_t, VPADRead, VPADChan chan, VPADStatus *buffers, uint32_t co
         *outError = error;
     }
     if (result > 0 && error == VPAD_READ_SUCCESS && buffers) {
-        update(static_cast<uint32_t>(buffers[0].hold));
-        if (kBlockDpad && gValid) {
-            const uint32_t mask = VPAD_BUTTON_UP | VPAD_BUTTON_DOWN;
+        update(static_cast<uint32_t>(buffers[0].hold), static_cast<uint32_t>(buffers[0].trigger));
+        if (gValid) {
+            // Minus is always hidden from the game; D-pad up/down only while the menu is open.
+            uint32_t mask = VPAD_BUTTON_MINUS;
+            if (gMenuOpen) {
+                mask |= VPAD_BUTTON_UP | VPAD_BUTTON_DOWN;
+            }
             for (int32_t i = 0; i < result; ++i) {
                 buffers[i].hold    = static_cast<VPADButtons>(buffers[i].hold & ~mask);
                 buffers[i].trigger = static_cast<VPADButtons>(buffers[i].trigger & ~mask);
