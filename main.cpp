@@ -200,7 +200,7 @@ void updateOverlay() {
         return;
     }
     if (!gOverlayExists) {
-        if (static_cast<int>(NotificationModule_AddDynamicDurationNotification(text, &gOverlay)) == 0) {
+        if (static_cast<int>(NotificationModule_AddDynamicNotification(text, &gOverlay)) == 0) {
             gOverlayExists = true;
         } else {
             return; // try again next frame
