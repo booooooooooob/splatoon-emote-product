@@ -22,10 +22,10 @@ CXXFLAGS := $(CFLAGS) -std=c++20
 ASFLAGS  := -g $(ARCH)
 LDFLAGS   = -g $(ARCH) $(RPXSPECS) -Wl,-Map,$(notdir $*.map) $(WUPSSPECS)
 
-LIBS    := -lwups -lwut
-LIBDIRS := $(PORTLIBS) $(WUPS_ROOT) $(WUT_ROOT) $(WUT_ROOT)/usr
+LIBS    := -lnotifications -lwups -lwut
+LIBDIRS := $(PORTLIBS) $(WUPS_ROOT) $(WUT_ROOT) $(WUT_ROOT)/usr $(WUMS_ROOT)
 
-
+.RECIPEPREFIX := >
 
 ifneq ($(BUILD),$(notdir $(CURDIR)))
 
@@ -50,11 +50,11 @@ export LIBPATHS := $(foreach dir,$(LIBDIRS),-L$(dir)/lib)
 all: $(BUILD)
 
 $(BUILD):
-	@[ -d $@ ] || mkdir -p $@
-	@$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
+> @[ -d $@ ] || mkdir -p $@
+> @$(MAKE) --no-print-directory -C $(BUILD) -f $(CURDIR)/Makefile
 
 clean:
-	@rm -fr $(BUILD) $(TARGET).wps $(TARGET).elf
+> @rm -fr $(BUILD) $(TARGET).wps $(TARGET).elf
 
 else
 
